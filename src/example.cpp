@@ -18,22 +18,68 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <avr/sleep.h>
 #include <SensirionI2CSht4x.h>
 #include <SensirionErrors.h>
 #include "Lorawan.hpp"
+
 
 // power draw with no sleep: 15.7mA during waiting with > 22mA peaks during transmission - probably much higher during transmission.
 
 float _convertTicksToCelsius(uint16_t ticks); 
 float _convertTicksToPercentRH(uint16_t ticks); 
 uint16_t readSupplyVoltage();
+void RTC_init(void);
+void printResetReason();
 
 SensirionI2CSht4x sht4x;
 Lorawan e5;  // default Serial1. See defines in Lorawan.hpp to change serial port.
 
+struct RTC_Event {
+  uint16_t count = 0;
+  uint16_t period = 0;
+  volatile uint8_t flag = 0;
+};
+
+struct Events {
+  // boot
+  RTC_Event sample = {0, 30, 0}; // sample every 30 tick (seconds)
+  RTC_Event report_uart = {0, 60, 0};
+  RTC_Event rejoin = {0, 120, 0};
+};
+
+Events rtc_event;
+
+// RTC
+ISR(RTC_PIT_vect)
+{
+  RTC.PITINTFLAGS = RTC_PI_bm;          /* Clear interrupt flag by writing '1' (required) */  
+
+  if (rtc_event.sample.count == (rtc_event.sample.period-1))
+  {
+    rtc_event.sample.count = 0;
+    rtc_event.sample.flag = 1;
+  } else { rtc_event.sample.count++; }
+
+  if (rtc_event.report_uart.count == rtc_event.report_uart.period-1)
+  {
+    rtc_event.report_uart.count = 0;
+    rtc_event.report_uart.flag = 1;
+  } else { rtc_event.report_uart.count++; }
+
+  if (rtc_event.rejoin.count == rtc_event.rejoin.period-1)
+  {
+    rtc_event.rejoin.count = 0;
+    rtc_event.rejoin.flag = 1;
+  } else { rtc_event.rejoin.count++; }
+
+}
+
+
 void setup() {
   // put your setup code here, to run once:
   pinMode(PIN_PA5,OUTPUT);
+  digitalWrite(PIN_PA5,HIGH);
   Serial.begin(115200);
   while (!Serial) {
     delay(100);
@@ -62,7 +108,8 @@ void setup() {
       Serial.println(serialNumber);
   }
 
-  // LoraE5
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);  /* Set sleep mode to SLEEP_MODE_STANDBY SLEEP_MODE_IDLE SLEEP_MODE_PWR_DOWN mode */
+  sleep_enable();                       /* Enable sleep mode, but not going to sleep yet */
   
   //Serial.println("AT+ID"); LoraE5.println("AT+ID"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
   //Serial.println("AT+DR=US915"); LoraE5.println("AT+DR=US915"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
@@ -79,13 +126,16 @@ void setup() {
   s= e5.sendATCommand("AT+MODE=LWOTAA",  "+MODE:",                "+AT: ERROR",300,1000); Serial.println(s);
   s= e5.sendATCommand("AT+JOIN",         "+JOIN: Network joined", "+JOIN: Join failed",7000,8000); Serial.println(s);
 
+  Serial.flush();
+  RTC_init();
+
+  digitalWrite(PIN_PA5,LOW);
+  pinMode(PIN_PA5,INPUT);
+
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  
-  digitalWrite(PIN_PA5,CHANGE);
-  //Serial.println("Hello World");
 
   float temperature;
   float humidity;
@@ -95,48 +145,52 @@ void loop() {
   uint16_t humidityTicks;
   int16_t supply_mv;
 
-  supply_mv = readSupplyVoltage();
-  error = sht4x.measureHighPrecisionTicks(temperatureTicks, humidityTicks);
- if (error) {
-      Serial.print("Error trying to execute measureHighPrecision(): ");
-      errorToString(error, errorMessage, 256);
-      Serial.println(errorMessage);
-  } else {
-      temperature = _convertTicksToCelsius(temperatureTicks);
-      humidity = _convertTicksToPercentRH(humidityTicks); 
+  if (rtc_event.sample.flag) {
+    rtc_event.sample.flag = 0;
 
-      Serial.print("Supply voltage: ");
-      Serial.print(supply_mv);
-      Serial.print("\t");
-      Serial.print("Temperature:");
-      Serial.print(temperature);
-      Serial.print("\t");
-      Serial.print("Humidity:");
-      Serial.print(humidity);
-      Serial.print(" Lorawan bytes: ");
-      Serial.printHex(supply_mv); Serial.printHex(temperatureTicks); Serial.printHex(humidityTicks);  // LoraWAN bytes: 3300mV 2 bytes, 2 bytes temperature, 2 bytes humidity
-      Serial.println();
+    supply_mv = readSupplyVoltage();
+    error = sht4x.measureHighPrecisionTicks(temperatureTicks, humidityTicks);
+    if (error) {
+        Serial.print("Error trying to execute measureHighPrecision(): ");
+        errorToString(error, errorMessage, 256);
+        Serial.println(errorMessage);
+    } else {
+        temperature = _convertTicksToCelsius(temperatureTicks);
+        humidity = _convertTicksToPercentRH(humidityTicks); 
 
-      // unconfirmed messages are not working in the E5 module.
-      
-      // //AT+MSGHEX="xx xx xx xx"
-      // uint8_t buf[64];
-      // sprintf((char*)buf,"AT+MSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
-      // bool status;
-      // status = e5.sendATCommand(buf,         "+MSGHEX: RXWIN",     "+MSGHEX: Please join network first",13000,15000); Serial.println(status);
+        Serial.print("Supply voltage: ");
+        Serial.print(supply_mv);
+        Serial.print("\t");
+        Serial.print("Temperature:");
+        Serial.print(temperature);
+        Serial.print("\t");
+        Serial.print("Humidity:");
+        Serial.print(humidity);
+        Serial.print(" Lorawan bytes: ");
+        Serial.printHex(supply_mv); Serial.printHex(temperatureTicks); Serial.printHex(humidityTicks);  // LoraWAN bytes: 3300mV 2 bytes, 2 bytes temperature, 2 bytes humidity
+        Serial.println();
 
-      //AT+CMSGHEX="xx xx xx xx" // confirmed message.
-      uint8_t buf[64];
-      sprintf((char*)buf,"AT+CMSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
-      bool status;
-      status = e5.sendATCommand(buf,         "+CMSGHEX: ACK Received",     "+CMSGHEX: Please join network first",13000,15000); Serial.println(status);    
+        // unconfirmed messages are not working in the E5 module.
+        
+        // //AT+MSGHEX="xx xx xx xx"
+        // uint8_t buf[64];
+        // sprintf((char*)buf,"AT+MSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
+        // bool status;
+        // status = e5.sendATCommand(buf,         "+MSGHEX: RXWIN",     "+MSGHEX: Please join network first",13000,15000); Serial.println(status);
 
+        //AT+CMSGHEX="xx xx xx xx" // confirmed message.
+        uint8_t buf[64];
+        sprintf((char*)buf,"AT+CMSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
+        bool status;
+        status = e5.sendATCommand(buf,         "+CMSGHEX: ACK Received",     "+CMSGHEX: Please join network first",13000,15000); Serial.println(status);    
+
+    }
+    Serial.flush();
   }
 
-
-  // every 10 seconds
-  delay(30000);
-  
+  ADC0.CTRLA &= ~ADC_ENABLE_bm; // disable ADC
+  sleep_cpu();
+  ADC0.CTRLA |= ADC_ENABLE_bm; // enable ADC
 
 }
 
@@ -185,4 +239,46 @@ uint16_t readSupplyVoltage()
   return returnval;
   #endif
 }
+
+
+void RTC_init(void)
+{
+  /* Initialize RTC: */
+  while (RTC.STATUS > 0)
+  {
+    ;                                   /* Wait for all register to be synchronized */
+  }
+  RTC.CTRLA |= RTC_RUNSTDBY_bm;            /* Run RTC in RUNSTANDBY */
+  RTC.CLKSEL = RTC_CLKSEL_INT32K_gc;    /* 32.768kHz Internal Ultra-Low-Power Oscillator (OSCULP32K) */
+
+  RTC.PITINTCTRL = RTC_PI_bm;           /* PIT Interrupt: enabled */
+
+  RTC.PITCTRLA = RTC_PERIOD_CYC32768_gc /*  RTC_PERIOD_CYC8192_gc=4Hz*/
+  | RTC_PITEN_bm;                       /* Enable PIT counter: enabled */
+ /* RTC_PERIOD_CYC32768_gc= 1Hz   RTC_PERIOD_CYC4096_gc=8HZ   RTC_PERIOD_CYC1024_gc=32HZ*/
+}
+
+void printResetReason() 
+{
+  uint8_t reset_flags = GPIOR0;
+  if (reset_flags & RSTCTRL_UPDIRF_bm) {
+    Serial.println("Reset by UPDI (code just upoloaded now)");
+  }
+  if (reset_flags & RSTCTRL_WDRF_bm) {
+    Serial.println("reset by WDT timeout");
+  }
+  if (reset_flags & RSTCTRL_SWRF_bm) {
+    Serial.println("reset at request of user code. OR CRASH!");
+  }
+  if (reset_flags & RSTCTRL_EXTRF_bm) {
+    Serial.println("Reset because reset pin brought low");
+  }
+  if (reset_flags & RSTCTRL_BORF_bm) {
+    Serial.println("Reset by voltage brownout");
+  }
+  if (reset_flags & RSTCTRL_PORF_bm) {
+    Serial.println("Reset by power on");
+  }
+}
+
 
