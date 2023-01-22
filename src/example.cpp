@@ -1,7 +1,6 @@
 /* 
   Copyright (c) 2023 Hudson Sonoma LLC
   tim@hudson-sonoma.com
-  AC Current sense for the Microchip ATtiny 2-series microcontroller 
   
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -72,11 +71,13 @@ void setup() {
   //Serial.println("AT+JOIN"); LoraE5.println("AT+JOIN"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
 
   bool s;
-  s= e5.sendATCommand("AT+ID",           "+ID: AppEui",     "+AT: ERROR",300,1000); Serial.println(s);
+  s= e5.sendATCommand("AT+LOWPOWER=AUTOON",  "+LOWPOWER: AUTOON", "+AT: ERROR",300,1000); Serial.println(s);
+  //s= e5.sendATCommand("ÿÿÿÿAT+LOWPOWER=AUTOOFF", "+LOWPOWER: AUTOOFF","+AT: ERROR",300,1000); Serial.println(s);
+  s= e5.sendATCommand("AT+ID",           "+ID: AppEui",           "+AT: ERROR",300,1000); Serial.println(s);
   s= e5.sendATCommand("AT+DR=US915",     "+DR: US915",            "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+CH=NUM,8-15",  "+CH: NUM,",       "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+MODE=LWOTAA",  "+MODE:",          "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+JOIN",         "+JOIN: Network joined",     "+JOIN: Join failed",7000,8000); Serial.println(s);
+  s= e5.sendATCommand("AT+CH=NUM,8-15",  "+CH: NUM,",             "+AT: ERROR",300,1000); Serial.println(s);
+  s= e5.sendATCommand("AT+MODE=LWOTAA",  "+MODE:",                "+AT: ERROR",300,1000); Serial.println(s);
+  s= e5.sendATCommand("AT+JOIN",         "+JOIN: Network joined", "+JOIN: Join failed",7000,8000); Serial.println(s);
 
 }
 

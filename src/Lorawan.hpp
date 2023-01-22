@@ -1,7 +1,6 @@
 /* 
-  Copyright (c) 2022 Hudson Sonoma LLC
+  Copyright (c) 2023 Hudson Sonoma LLC
   tim@hudson-sonoma.com
-  AC Current sense for the Microchip ATtiny 2-series microcontroller 
   
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -44,18 +43,13 @@ public:
 
   /**
  * Execute an AT command with a timeout
- * Search for okResp or errResp to determine is the command is a success or a fail
- * When ending is defined, it search for this sentence to consider end of response
- * Can be executed as a sync or async command.
- * okResp and errResp can use joker char with '*'
- * The okResp / errResp surch is a startsWith operation
- * When lineProcessing function is given, each of the line are transmitted to a custom function for
- * processing, when return true, processing is stopped (like for ending)
+ * startsWith okResp or errResp to determine is the command is a success or a fail
+ * okResp and errResp can use wild char '*'
  */
 bool Lorawan::sendATCommand(const char *cmd, const char *okResp, const char *errResp, uint32_t mintimeMs, uint32_t timeoutMs) {
 
  
-    LoraE5.printf("%s\r\n", cmd);
+    LoraE5.printf("ÿÿÿÿ%s\r\n", cmd);   // 4 bytes of 0xff to wake up the module. In ascii, 'ÿÿÿÿ'
     DebugSerial.printf("%s\r\n", cmd);
 
     this->statusOfCommand = false;
@@ -64,7 +58,8 @@ bool Lorawan::sendATCommand(const char *cmd, const char *okResp, const char *err
     { ; }
     delay(300);
     while(LoraE5.available() > 0) {
-        DebugSerial.write(LoraE5.read()); // echo any left over input
+        uint8_t c = LoraE5.read();
+        if (c >= 32 && c <= 127) { DebugSerial.write(c); } // echo any left over input
     }
     return this->statusOfCommand;
 }
