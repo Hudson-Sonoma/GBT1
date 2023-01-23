@@ -23,17 +23,24 @@
 #include <SensirionErrors.h>
 #include "Lorawan.hpp"
 
+// Lorawan transmissions
+// BOOT           PORT=8 boot flags 8bit, 16bit software_version, 32bit SHT40id,
+// REJOIN/STATUS  PORT=7 uptime millis 32bit, battery voltage 16bit, RSSI 8bit, SNR 8bit, 
+// SAMPLE         PORT=1 temperature 16bit, humidity 16bit
+
 
 // power draw with no sleep: 15.7mA during waiting with > 22mA peaks during transmission - probably much higher during transmission.
 
 float _convertTicksToCelsius(uint16_t ticks); 
 float _convertTicksToPercentRH(uint16_t ticks); 
 uint16_t readSupplyVoltage();
-void RTC_init(void);
+void RTC_init();
 void printResetReason();
 
 SensirionI2CSht4x sht4x;
-Lorawan e5;  // default Serial1. See defines in Lorawan.hpp to change serial port.
+Lorawan e5;  // defaults to Serial1. See defines in Lorawan.hpp to change serial port.
+uint16_t software_version = 0x0001;
+uint16_t message_failures = 0;
 
 struct RTC_Event {
   uint16_t count = 0;
@@ -44,7 +51,7 @@ struct RTC_Event {
 struct Events {
   // boot
   RTC_Event sample = {0, 30, 0}; // sample every 30 tick (seconds)
-  RTC_Event report_uart = {0, 60, 0};
+  RTC_Event status = {0, 60, 0};
   RTC_Event rejoin = {0, 120, 0};
 };
 
@@ -61,11 +68,11 @@ ISR(RTC_PIT_vect)
     rtc_event.sample.flag = 1;
   } else { rtc_event.sample.count++; }
 
-  if (rtc_event.report_uart.count == rtc_event.report_uart.period-1)
+  if (rtc_event.status.count == rtc_event.status.period-1)
   {
-    rtc_event.report_uart.count = 0;
-    rtc_event.report_uart.flag = 1;
-  } else { rtc_event.report_uart.count++; }
+    rtc_event.status.count = 0;
+    rtc_event.status.flag = 1;
+  } else { rtc_event.status.count++; }
 
   if (rtc_event.rejoin.count == rtc_event.rejoin.period-1)
   {
@@ -74,7 +81,6 @@ ISR(RTC_PIT_vect)
   } else { rtc_event.rejoin.count++; }
 
 }
-
 
 void setup() {
   // put your setup code here, to run once:
@@ -85,14 +91,13 @@ void setup() {
     delay(100);
   } 
 
-  LoraE5.begin(9600);
-  while (!LoraE5) {
-    delay(100);
-  }
+  LoraE5.begin(115200);
 
   Wire.begin();
 
   delay(3000);
+
+  printResetReason();
 
   // SHT40
   uint16_t error;
@@ -111,20 +116,33 @@ void setup() {
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);  /* Set sleep mode to SLEEP_MODE_STANDBY SLEEP_MODE_IDLE SLEEP_MODE_PWR_DOWN mode */
   sleep_enable();                       /* Enable sleep mode, but not going to sleep yet */
   
-  //Serial.println("AT+ID"); LoraE5.println("AT+ID"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
-  //Serial.println("AT+DR=US915"); LoraE5.println("AT+DR=US915"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
-  //Serial.println("AT+CH=NUM,8-15"); LoraE5.println("AT+CH=NUM,8-15"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
-  //Serial.println("AT+MODE=LWOTAA"); LoraE5.println("AT+MODE=LWOTAA"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
-  //Serial.println("AT+JOIN"); LoraE5.println("AT+JOIN"); delay(300); while (LoraE5.available()) { Serial.write(LoraE5.read()); } Serial.println();
-
   bool s;
-  s= e5.sendATCommand("AT+LOWPOWER=AUTOON",  "+LOWPOWER: AUTOON", "+AT: ERROR",300,1000); Serial.println(s);
+  // If Wio E5 module is new, set to 9600 baud and reset.
+  if (!e5.sendATCommand("AT",  "+AT: OK", "+AT: ERROR",300)) {
+    LoraE5.begin(9600);
+    s= e5.sendATCommand("AT+UART=BR, 115200", "+UART: BR",         "+AT: ERROR",300); Serial.println(s);
+    s= e5.sendATCommand("AT+RESET",           "+RESET",            "+AT: ERROR",300); Serial.println(s);
+    LoraE5.begin(115200);
+    delay(2000);
+    s= e5.sendATCommand("AT",                 "+AT: OK",           "+AT: ERROR",300); Serial.println(s);   // Always is an error after reset, not sure why.
+  }
+
+  // Set to low power mode, turn on debugging info.
+  s= e5.sendATCommand("AT+LOWPOWER=AUTOON",  "+LOWPOWER: AUTOON", "+AT: ERROR",300); Serial.println(s);
   //s= e5.sendATCommand("ÿÿÿÿAT+LOWPOWER=AUTOOFF", "+LOWPOWER: AUTOOFF","+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+ID",           "+ID: AppEui",           "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+DR=US915",     "+DR: US915",            "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+CH=NUM,8-15",  "+CH: NUM,",             "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+MODE=LWOTAA",  "+MODE:",                "+AT: ERROR",300,1000); Serial.println(s);
-  s= e5.sendATCommand("AT+JOIN",         "+JOIN: Network joined", "+JOIN: Join failed",7000,8000); Serial.println(s);
+  s= e5.sendATCommand("AT+LOG=DEBUG",    "+LOG: DEBUG",           "+AT: ERROR",300); Serial.println(s);
+  s= e5.sendATCommand("AT+ID",           "+ID: AppEui",           "+AT: ERROR",300); Serial.println(s);
+
+  // Set up for US915.
+  s= e5.sendATCommand("AT+DR=US915",     "+DR: US915",            "+AT: ERROR",300); Serial.println(s);
+  s= e5.sendATCommand("AT+CH=NUM,8-15",  "+CH: NUM,",             "+AT: ERROR",300); Serial.println(s);
+  s= e5.sendATCommand("AT+DR=1",         "+DR:",                  "+AT: ERROR",300); Serial.println(s); // Set to >=DR1 so as to have packets up to 53 bytes.
+
+  // OTA, ADR ON.
+  s= e5.sendATCommand("AT+LW=LEN",       "+LW:",                  "+AT: ERROR",300); Serial.println(s);
+  s= e5.sendATCommand("AT+MODE=LWOTAA",  "+MODE:",                "+AT: ERROR",300); Serial.println(s);
+  s= e5.sendATCommand("AT+ADR=ON",       "+ADR: ON",              "+AT: ERROR",300); Serial.println(s);
+  s= e5.sendATCommand("AT+JOIN",         "+JOIN: Network joined", "+JOIN: Join failed",10000); Serial.println(s);
 
   Serial.flush();
   RTC_init();
@@ -148,41 +166,43 @@ void loop() {
   if (rtc_event.sample.flag) {
     rtc_event.sample.flag = 0;
 
+    bool status, message_sent;
+    if (message_failures > 5 ) {
+          status= e5.sendATCommand("AT+JOIN",         "+JOIN: Network joined", "+JOIN: Join failed",10000); Serial.println(status);
+          if (status) { message_failures = 0; }
+    }
+
     supply_mv = readSupplyVoltage();
     error = sht4x.measureHighPrecisionTicks(temperatureTicks, humidityTicks);
     if (error) {
-        Serial.print("Error trying to execute measureHighPrecision(): ");
+        Serial.print("Error trying to execute measureHighPrecisionTicks(): ");
         errorToString(error, errorMessage, 256);
         Serial.println(errorMessage);
     } else {
         temperature = _convertTicksToCelsius(temperatureTicks);
         humidity = _convertTicksToPercentRH(humidityTicks); 
 
-        Serial.print("Supply voltage: ");
-        Serial.print(supply_mv);
-        Serial.print("\t");
-        Serial.print("Temperature:");
-        Serial.print(temperature);
-        Serial.print("\t");
-        Serial.print("Humidity:");
-        Serial.print(humidity);
-        Serial.print(" Lorawan bytes: ");
-        Serial.printHex(supply_mv); Serial.printHex(temperatureTicks); Serial.printHex(humidityTicks);  // LoraWAN bytes: 3300mV 2 bytes, 2 bytes temperature, 2 bytes humidity
+        Serial.print("Supply voltage: "); Serial.print(supply_mv); Serial.print("\t"); Serial.print("Temperature:"); Serial.print(temperature); Serial.print("\t");
+        Serial.print("Humidity:"); Serial.print(humidity); Serial.println();
+        
+        uint8_t buf[64];
+        sprintf((char*)buf,"AT+PORT=%d",1);
+        status=e5.sendATCommand(buf,           "+PORT:",            "+AT: ERROR",300); Serial.println(status);
+        status=e5.sendATCommand("AT+DR",       "+DR:",              "+AT: ERROR",300); Serial.println(status);
+        sprintf((char*)buf,"AT+MSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
+        message_sent=e5.sendATCommand(buf,     "+MSGHEX: Done",     "+MSGHEX: Please join network first",10000); Serial.println(message_sent);
+        status=e5.sendATCommand("AT+DR",       "+DR:",              "+AT: ERROR",300); Serial.println(status);
         Serial.println();
 
-        // unconfirmed messages are not working in the E5 module.
-        
-        // //AT+MSGHEX="xx xx xx xx"
-        // uint8_t buf[64];
-        // sprintf((char*)buf,"AT+MSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
-        // bool status;
-        // status = e5.sendATCommand(buf,         "+MSGHEX: RXWIN",     "+MSGHEX: Please join network first",13000,15000); Serial.println(status);
-
         //AT+CMSGHEX="xx xx xx xx" // confirmed message.
-        uint8_t buf[64];
-        sprintf((char*)buf,"AT+CMSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
-        bool status;
-        status = e5.sendATCommand(buf,         "+CMSGHEX: ACK Received",     "+CMSGHEX: Please join network first",13000,15000); Serial.println(status);    
+        // uint8_t buf[64];
+        // sprintf((char*)buf,"AT+CMSGHEX=\"%02X %02X %02X\"",supply_mv,temperatureTicks,humidityTicks);
+        // bool status;
+        // status = e5.sendATCommand(buf,         "+CMSGHEX: ACK Received",     "+CMSGHEX: Please join network first",10000); Serial.println(status);    
+
+        if (!message_sent) {
+          message_failures++;
+        } 
 
     }
     Serial.flush();
@@ -193,7 +213,6 @@ void loop() {
   ADC0.CTRLA |= ADC_ENABLE_bm; // enable ADC
 
 }
-
 
 float _convertTicksToCelsius(uint16_t ticks) 
 {
@@ -253,16 +272,16 @@ void RTC_init(void)
 
   RTC.PITINTCTRL = RTC_PI_bm;           /* PIT Interrupt: enabled */
 
-  RTC.PITCTRLA = RTC_PERIOD_CYC32768_gc /*  RTC_PERIOD_CYC8192_gc=4Hz*/
+  RTC.PITCTRLA = RTC_PERIOD_CYC32768_gc /* RTC_PERIOD_CYC32768_gc= 1Hz  */
   | RTC_PITEN_bm;                       /* Enable PIT counter: enabled */
- /* RTC_PERIOD_CYC32768_gc= 1Hz   RTC_PERIOD_CYC4096_gc=8HZ   RTC_PERIOD_CYC1024_gc=32HZ*/
+ /* RTC_PERIOD_CYC32768_gc= 1Hz  RTC_PERIOD_CYC8192_gc=4Hz RTC_PERIOD_CYC4096_gc=8HZ   RTC_PERIOD_CYC1024_gc=32HZ*/
 }
 
 void printResetReason() 
 {
   uint8_t reset_flags = GPIOR0;
   if (reset_flags & RSTCTRL_UPDIRF_bm) {
-    Serial.println("Reset by UPDI (code just upoloaded now)");
+    Serial.println("Reset by UPDI (code just uploaded now)");
   }
   if (reset_flags & RSTCTRL_WDRF_bm) {
     Serial.println("reset by WDT timeout");

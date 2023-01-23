@@ -35,8 +35,8 @@ public:
                         // Function for processing AT response line
     bool statusOfCommand;        // state of the AT command execution
 
-    bool sendATCommand(const char *cmd, const char *okResp, const char *errResp, uint32_t mintimeMs, uint32_t timeoutMs);
-    bool processATResponse(const char *okResp, const char *errResp, uint32_t mintimeMs,uint32_t timeoutMs, uint32_t startTime);
+    bool sendATCommand(const char *cmd, const char *okResp, const char *errResp, uint32_t timeoutMs);
+    bool processATResponse(const char *okResp, const char *errResp, uint32_t timeoutMs, uint32_t startTime);
 
 
 };
@@ -46,7 +46,7 @@ public:
  * startsWith okResp or errResp to determine is the command is a success or a fail
  * okResp and errResp can use wild char '*'
  */
-bool Lorawan::sendATCommand(const char *cmd, const char *okResp, const char *errResp, uint32_t mintimeMs, uint32_t timeoutMs) {
+bool Lorawan::sendATCommand(const char *cmd, const char *okResp, const char *errResp, uint32_t timeoutMs) {
 
  
     LoraE5.printf("ÿÿÿÿ%s\r\n", cmd);   // 4 bytes of 0xff to wake up the module. In ascii, 'ÿÿÿÿ'
@@ -54,14 +54,15 @@ bool Lorawan::sendATCommand(const char *cmd, const char *okResp, const char *err
 
     this->statusOfCommand = false;
     uint32_t startTime = millis();
-    while (!processATResponse(okResp, errResp, mintimeMs, timeoutMs,startTime))
+    while (!processATResponse(okResp, errResp, timeoutMs,startTime))
     { ; }
     delay(300);
     while(LoraE5.available() > 0) {
         uint8_t c = LoraE5.read();
-        if (c >= 32 && c <= 127) { DebugSerial.write(c); } // echo any left over input
+        if (c < 255) { DebugSerial.write(c); } // echo any left over input except 0xFF
     }
     return this->statusOfCommand;
+
 }
 
 
@@ -73,17 +74,12 @@ bool Lorawan::sendATCommand(const char *cmd, const char *okResp, const char *err
  * Process command response
  * return true when nothing more to be done
  */
-bool Lorawan::processATResponse(const char *okResp, const char *errResp, uint32_t mintimeMs,uint32_t timeoutMs, uint32_t startTime) {
+bool Lorawan::processATResponse(const char *okResp, const char *errResp, uint32_t timeoutMs, uint32_t startTime) {
 
-    // manage timeout
-    uint32_t duration = millis() - startTime; // overflow after 50D. risk taken.
-    if (duration > timeoutMs) {
-        DebugSerial.println("LoRaE5 - timeout ");
-        return true;
-    }
+
     // process serial line response
     uint32_t min_duration = millis() - startTime;
-    while (min_duration < mintimeMs) { 
+    while (min_duration < timeoutMs) { 
       min_duration = millis() - startTime; 
       while ((LoraE5.available() > 0) ) {
           char c;
@@ -124,7 +120,12 @@ bool Lorawan::processATResponse(const char *okResp, const char *errResp, uint32_
           }
       }
     }
-    return false;
+    if (min_duration < timeoutMs) {
+        return false;
+    } else {
+        DebugSerial.println("LoRaE5 - Response timeout ");
+        return true;
+    }
 }
 
 // compare str with a ref string and return true when
