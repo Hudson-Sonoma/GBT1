@@ -5,6 +5,8 @@ Seeed Studio Grove Base ATtiny3224
 
 ![PCB](docs/GBT2-front-2-ray.png)
 
+![PCB](docs/grove-base-back.png)
+
 This module is based on the ATtiny tinyAVR 2-series 3224 MCU. It may only be 8-bit, but It is a powerful MCU that has an advanced differential ADC, programmable asynchronous logic, and can be run at very low power. It has one hardware I2C port, two (!) hardware UARTS, and five additional GPIOs that support ADC and PWM. The GPIOs allow for two additional general purpose Grove system ADIO connectors.
 
 The Grove ATtiny3224 Base has 6 grove connector ports, and one Lipo battery port.
